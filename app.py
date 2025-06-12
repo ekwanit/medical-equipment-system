@@ -1,4 +1,5 @@
 # เพิ่มที่ต้นไฟล์
+# ลบฐานข้อมูลเก่าทิ้งเพื่อแก้ปัญหา schema
 import os
 import sys
 
@@ -26,6 +27,11 @@ if not os.path.exists('data'):
 # ใช้ path ของฐานข้อมูลที่ชัดเจน
 DB_PATH = 'data/medical_equipment.db'
 
+# ลบฐานข้อมูลเก่าทิ้งเพื่อแก้ปัญหา schema (ใช้เมื่อมีปัญหาเท่านั้น)
+if os.path.exists(DB_PATH):
+    os.remove(DB_PATH)
+    print("ลบฐานข้อมูลเก่าแล้ว จะสร้างใหม่")
+
 # ตั้งค่าหน้าเว็บ
 st.set_page_config(
     page_title="ระบบเบิกเครื่องมือแพทย์",
@@ -43,6 +49,7 @@ def column_exists(cursor, table_name, column_name):
         return False
 
 # ฟังก์ชันสร้างฐานข้อมูล
+# ฟังก์ชันสร้างฐานข้อมูล - เวอร์ชันง่าย
 def init_database():
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
@@ -61,7 +68,7 @@ def init_database():
             )
         ''')
         
-        # สร้างตาราง transactions (ปรับปรุงเพื่อรองรับการคืนบางส่วน)
+        # สร้างตาราง transactions (สมบูรณ์)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
                 id TEXT PRIMARY KEY,
@@ -78,65 +85,20 @@ def init_database():
                 notes TEXT,
                 fully_returned BOOLEAN DEFAULT FALSE,
                 last_return_date TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (equipment_id) REFERENCES equipment (id)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
-        # สร้างตาราง return_history (เก็บประวัติการคืนแต่ละครั้ง)
+        # สร้างตาราง return_history
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS return_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 transaction_id TEXT NOT NULL,
                 returned_quantity INTEGER NOT NULL,
                 return_date TEXT NOT NULL,
-                notes TEXT,
-                FOREIGN KEY (transaction_id) REFERENCES transactions (id)
+                notes TEXT
             )
         ''')
-        
-        # เพิ่มคอลัมน์ใหม่ถ้ายังไม่มี (ทีละคอลัมน์เพื่อป้องกัน error)
-        columns_to_add = [
-            ("returned_quantity", "INTEGER DEFAULT 0"),
-            ("remaining_quantity", "INTEGER"),
-            ("fully_returned", "BOOLEAN DEFAULT FALSE"),
-            ("last_return_date", "TEXT")
-        ]
-        
-        for column_name, column_def in columns_to_add:
-            if not column_exists(cursor, "transactions", column_name):
-                try:
-                    cursor.execute(f"ALTER TABLE transactions ADD COLUMN {column_name} {column_def}")
-                    print(f"เพิ่มคอลัมน์ {column_name} สำเร็จ")
-                except sqlite3.OperationalError as e:
-                    print(f"ไม่สามารถเพิ่มคอลัมน์ {column_name}: {e}")
-        
-        # อัพเดทข้อมูลเก่าให้มีค่าที่ถูกต้อง (เฉพาะกรณีที่มีคอลัมน์ returned เก่า)
-        if column_exists(cursor, "transactions", "returned"):
-            try:
-                cursor.execute('''
-                    UPDATE transactions 
-                    SET returned_quantity = CASE WHEN returned = 1 THEN quantity ELSE 0 END,
-                        remaining_quantity = CASE WHEN returned = 1 THEN 0 ELSE quantity END,
-                        fully_returned = returned
-                    WHERE returned_quantity IS NULL OR remaining_quantity IS NULL
-                ''')
-                print("อัพเดทข้อมูลเก่าจาก returned column สำเร็จ")
-            except sqlite3.OperationalError as e:
-                print(f"ไม่สามารถอัพเดทข้อมูลเก่า: {e}")
-        else:
-            # อัพเดทข้อมูลที่ remaining_quantity เป็น NULL
-            try:
-                cursor.execute('''
-                    UPDATE transactions 
-                    SET remaining_quantity = quantity,
-                        returned_quantity = 0,
-                        fully_returned = FALSE
-                    WHERE remaining_quantity IS NULL
-                ''')
-                print("อัพเดทข้อมูลที่ขาดค่า remaining_quantity สำเร็จ")
-            except sqlite3.OperationalError as e:
-                print(f"ไม่สามารถอัพเดทข้อมูล remaining_quantity: {e}")
         
         # ใส่ข้อมูลเริ่มต้น (ถ้ายังไม่มี)
         cursor.execute("SELECT COUNT(*) FROM equipment")
@@ -161,7 +123,6 @@ def init_database():
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในการเริ่มต้นฐานข้อมูล: {e}")
         conn.rollback()
-        raise e
     finally:
         conn.close()
 
