@@ -33,141 +33,178 @@ st.set_page_config(
     layout="wide"
 )
 
+# ฟังก์ชันตรวจสอบคอลัมน์
+def column_exists(cursor, table_name, column_name):
+    try:
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        return column_name in columns
+    except sqlite3.OperationalError:
+        return False
+
 # ฟังก์ชันสร้างฐานข้อมูล
 def init_database():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    # สร้างตาราง equipment
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS equipment (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            category TEXT NOT NULL,
-            quantity INTEGER NOT NULL,
-            unit TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # สร้างตาราง transactions (ปรับปรุงเพื่อรองรับการคืนบางส่วน)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS transactions (
-            id TEXT PRIMARY KEY,
-            equipment_id TEXT NOT NULL,
-            equipment_name TEXT NOT NULL,
-            borrower_name TEXT NOT NULL,
-            borrower_dept TEXT NOT NULL,
-            quantity INTEGER NOT NULL,
-            returned_quantity INTEGER DEFAULT 0,
-            remaining_quantity INTEGER NOT NULL,
-            unit TEXT NOT NULL,
-            date TEXT NOT NULL,
-            status TEXT NOT NULL,
-            notes TEXT,
-            fully_returned BOOLEAN DEFAULT FALSE,
-            last_return_date TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (equipment_id) REFERENCES equipment (id)
-        )
-    ''')
-    
-    # สร้างตาราง return_history (เก็บประวัติการคืนแต่ละครั้ง)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS return_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            transaction_id TEXT NOT NULL,
-            returned_quantity INTEGER NOT NULL,
-            return_date TEXT NOT NULL,
-            notes TEXT,
-            FOREIGN KEY (transaction_id) REFERENCES transactions (id)
-        )
-    ''')
-    
-    # ใส่ข้อมูลเริ่มต้น (ถ้ายังไม่มี)
-    cursor.execute("SELECT COUNT(*) FROM equipment")
-    if cursor.fetchone()[0] == 0:
-        initial_equipment = [
-            ("EQ001", "เครื่องวัดความดัน", "การตรวจ", 10, "เครื่อง"),
-            ("EQ002", "หูฟังแพทย์", "การตรวจ", 5, "อัน"),
-            ("EQ003", "เทอร์โมมิเตอร์", "การตรวจ", 15, "อัน"),
-            ("EQ004", "ถุงมือยาง", "อุปกรณ์ความปลอดภัย", 100, "คู่"),
-            ("EQ005", "แอลกอฮอล์เจล", "อุปกรณ์ความปลอดภัย", 50, "ขวด")
+    try:
+        # สร้างตาราง equipment
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS equipment (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                unit TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # สร้างตาราง transactions (ปรับปรุงเพื่อรองรับการคืนบางส่วน)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS transactions (
+                id TEXT PRIMARY KEY,
+                equipment_id TEXT NOT NULL,
+                equipment_name TEXT NOT NULL,
+                borrower_name TEXT NOT NULL,
+                borrower_dept TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                returned_quantity INTEGER DEFAULT 0,
+                remaining_quantity INTEGER NOT NULL,
+                unit TEXT NOT NULL,
+                date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                notes TEXT,
+                fully_returned BOOLEAN DEFAULT FALSE,
+                last_return_date TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (equipment_id) REFERENCES equipment (id)
+            )
+        ''')
+        
+        # สร้างตาราง return_history (เก็บประวัติการคืนแต่ละครั้ง)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS return_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transaction_id TEXT NOT NULL,
+                returned_quantity INTEGER NOT NULL,
+                return_date TEXT NOT NULL,
+                notes TEXT,
+                FOREIGN KEY (transaction_id) REFERENCES transactions (id)
+            )
+        ''')
+        
+        # เพิ่มคอลัมน์ใหม่ถ้ายังไม่มี (ทีละคอลัมน์เพื่อป้องกัน error)
+        columns_to_add = [
+            ("returned_quantity", "INTEGER DEFAULT 0"),
+            ("remaining_quantity", "INTEGER"),
+            ("fully_returned", "BOOLEAN DEFAULT FALSE"),
+            ("last_return_date", "TEXT")
         ]
         
-        cursor.executemany('''
-            INSERT INTO equipment (id, name, category, quantity, unit)
-            VALUES (?, ?, ?, ?, ?)
-        ''', initial_equipment)
-    
-    # อัพเกรดฐานข้อมูลเก่า (เพิ่มคอลัมน์ใหม่ถ้ายังไม่มี)
-    try:
-        cursor.execute("ALTER TABLE transactions ADD COLUMN returned_quantity INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
-    
-    try:
-        cursor.execute("ALTER TABLE transactions ADD COLUMN remaining_quantity INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    
-    try:
-        cursor.execute("ALTER TABLE transactions ADD COLUMN fully_returned BOOLEAN DEFAULT FALSE")
-    except sqlite3.OperationalError:
-        pass
-    
-    try:
-        cursor.execute("ALTER TABLE transactions ADD COLUMN last_return_date TEXT")
-    except sqlite3.OperationalError:
-        pass
-    
-    # อัพเดทข้อมูลเก่าให้มีค่าที่ถูกต้อง
-    cursor.execute('''
-        UPDATE transactions 
-        SET returned_quantity = CASE WHEN returned = 1 THEN quantity ELSE 0 END,
-            remaining_quantity = CASE WHEN returned = 1 THEN 0 ELSE quantity END,
-            fully_returned = returned
-        WHERE returned_quantity IS NULL OR remaining_quantity IS NULL
-    ''')
-    
-    conn.commit()
-    conn.close()
+        for column_name, column_def in columns_to_add:
+            if not column_exists(cursor, "transactions", column_name):
+                try:
+                    cursor.execute(f"ALTER TABLE transactions ADD COLUMN {column_name} {column_def}")
+                    print(f"เพิ่มคอลัมน์ {column_name} สำเร็จ")
+                except sqlite3.OperationalError as e:
+                    print(f"ไม่สามารถเพิ่มคอลัมน์ {column_name}: {e}")
+        
+        # อัพเดทข้อมูลเก่าให้มีค่าที่ถูกต้อง (เฉพาะกรณีที่มีคอลัมน์ returned เก่า)
+        if column_exists(cursor, "transactions", "returned"):
+            try:
+                cursor.execute('''
+                    UPDATE transactions 
+                    SET returned_quantity = CASE WHEN returned = 1 THEN quantity ELSE 0 END,
+                        remaining_quantity = CASE WHEN returned = 1 THEN 0 ELSE quantity END,
+                        fully_returned = returned
+                    WHERE returned_quantity IS NULL OR remaining_quantity IS NULL
+                ''')
+                print("อัพเดทข้อมูลเก่าจาก returned column สำเร็จ")
+            except sqlite3.OperationalError as e:
+                print(f"ไม่สามารถอัพเดทข้อมูลเก่า: {e}")
+        else:
+            # อัพเดทข้อมูลที่ remaining_quantity เป็น NULL
+            try:
+                cursor.execute('''
+                    UPDATE transactions 
+                    SET remaining_quantity = quantity,
+                        returned_quantity = 0,
+                        fully_returned = FALSE
+                    WHERE remaining_quantity IS NULL
+                ''')
+                print("อัพเดทข้อมูลที่ขาดค่า remaining_quantity สำเร็จ")
+            except sqlite3.OperationalError as e:
+                print(f"ไม่สามารถอัพเดทข้อมูล remaining_quantity: {e}")
+        
+        # ใส่ข้อมูลเริ่มต้น (ถ้ายังไม่มี)
+        cursor.execute("SELECT COUNT(*) FROM equipment")
+        if cursor.fetchone()[0] == 0:
+            initial_equipment = [
+                ("EQ001", "เครื่องวัดความดัน", "การตรวจ", 10, "เครื่อง"),
+                ("EQ002", "หูฟังแพทย์", "การตรวจ", 5, "อัน"),
+                ("EQ003", "เทอร์โมมิเตอร์", "การตรวจ", 15, "อัน"),
+                ("EQ004", "ถุงมือยาง", "อุปกรณ์ความปลอดภัย", 100, "คู่"),
+                ("EQ005", "แอลกอฮอล์เจล", "อุปกรณ์ความปลอดภัย", 50, "ขวด")
+            ]
+            
+            cursor.executemany('''
+                INSERT INTO equipment (id, name, category, quantity, unit)
+                VALUES (?, ?, ?, ?, ?)
+            ''', initial_equipment)
+            print("เพิ่มข้อมูลเครื่องมือเริ่มต้นสำเร็จ")
+        
+        conn.commit()
+        print("เริ่มต้นฐานข้อมูลสำเร็จ")
+        
+    except Exception as e:
+        print(f"เกิดข้อผิดพลาดในการเริ่มต้นฐานข้อมูล: {e}")
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
 
 # ฟังก์ชันโหลดข้อมูลเครื่องมือ
 @st.cache_data
 def load_equipment():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT * FROM equipment ORDER BY id", conn)
-    conn.close()
-    return df
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    try:
+        df = pd.read_sql_query("SELECT * FROM equipment ORDER BY id", conn)
+        return df
+    finally:
+        conn.close()
 
 # ฟังก์ชันโหลดข้อมูลการเบิก
 @st.cache_data
 def load_transactions():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query('''
-        SELECT * FROM transactions 
-        ORDER BY created_at DESC
-    ''', conn)
-    conn.close()
-    return df
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    try:
+        df = pd.read_sql_query('''
+            SELECT * FROM transactions 
+            ORDER BY created_at DESC
+        ''', conn)
+        return df
+    finally:
+        conn.close()
 
 # ฟังก์ชันโหลดประวัติการคืน
 @st.cache_data
 def load_return_history(transaction_id):
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query('''
-        SELECT * FROM return_history 
-        WHERE transaction_id = ?
-        ORDER BY return_date DESC
-    ''', conn, params=(transaction_id,))
-    conn.close()
-    return df
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    try:
+        df = pd.read_sql_query('''
+            SELECT * FROM return_history 
+            WHERE transaction_id = ?
+            ORDER BY return_date DESC
+        ''', conn, params=(transaction_id,))
+        return df
+    finally:
+        conn.close()
 
 # ฟังก์ชันเพิ่มเครื่องมือใหม่
 def add_equipment(eq_id, name, category, quantity, unit):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
     try:
@@ -179,27 +216,31 @@ def add_equipment(eq_id, name, category, quantity, unit):
         return True
     except sqlite3.IntegrityError:
         return False
+    except Exception as e:
+        print(f"Error adding equipment: {e}")
+        return False
     finally:
         conn.close()
 
 # ฟังก์ชันอัพเดทจำนวนเครื่องมือ
 def update_equipment_quantity(eq_id, new_quantity):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    cursor.execute('''
-        UPDATE equipment 
-        SET quantity = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-    ''', (new_quantity, eq_id))
-    
-    conn.commit()
-    conn.close()
+    try:
+        cursor.execute('''
+            UPDATE equipment 
+            SET quantity = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', (new_quantity, eq_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 # ฟังก์ชันเบิกเครื่องมือ
 def withdraw_equipment(transaction_id, equipment_id, equipment_name, borrower_name, 
                       borrower_dept, quantity, unit, notes):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
     try:
@@ -231,7 +272,7 @@ def withdraw_equipment(transaction_id, equipment_id, equipment_name, borrower_na
 
 # ฟังก์ชันคืนเครื่องมือบางส่วน
 def partial_return_equipment(transaction_id, return_quantity, notes=""):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
     try:
@@ -297,43 +338,47 @@ def partial_return_equipment(transaction_id, return_quantity, notes=""):
 
 # ฟังก์ชันลบรายการเบิกทั้งหมด
 def clear_all_transactions():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    cursor.execute("DELETE FROM transactions")
-    cursor.execute("DELETE FROM return_history")
-    conn.commit()
-    conn.close()
+    try:
+        cursor.execute("DELETE FROM transactions")
+        cursor.execute("DELETE FROM return_history")
+        conn.commit()
+    finally:
+        conn.close()
 
 # ฟังก์ชันดึงข้อมูลการเบิกเฉพาะ
 def get_transaction(transaction_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    cursor.execute('''
-        SELECT * FROM transactions 
-        WHERE id = ? AND fully_returned = FALSE
-    ''', (transaction_id,))
-    
-    result = cursor.fetchone()
-    
-    if result:
-        columns = [description[0] for description in cursor.description]
-        return dict(zip(columns, result))
-    
-    # ถ้าไม่พบหรือคืนครบแล้ว ให้ดูข้อมูลทั้งหมด
-    cursor.execute('''
-        SELECT * FROM transactions 
-        WHERE id = ?
-    ''', (transaction_id,))
-    
-    result = cursor.fetchone()
-    conn.close()
-    
-    if result:
-        columns = [description[0] for description in cursor.description]
-        return dict(zip(columns, result))
-    return None
+    try:
+        cursor.execute('''
+            SELECT * FROM transactions 
+            WHERE id = ? AND fully_returned = FALSE
+        ''', (transaction_id,))
+        
+        result = cursor.fetchone()
+        
+        if result:
+            columns = [description[0] for description in cursor.description]
+            return dict(zip(columns, result))
+        
+        # ถ้าไม่พบหรือคืนครบแล้ว ให้ดูข้อมูลทั้งหมด
+        cursor.execute('''
+            SELECT * FROM transactions 
+            WHERE id = ?
+        ''', (transaction_id,))
+        
+        result = cursor.fetchone()
+        
+        if result:
+            columns = [description[0] for description in cursor.description]
+            return dict(zip(columns, result))
+        return None
+    finally:
+        conn.close()
 
 # ฟังก์ชันสร้าง QR Code
 def generate_qr_code(data):
@@ -497,7 +542,10 @@ def process_qr_return(qr_data):
         st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
 
 # เริ่มต้นฐานข้อมูล
-init_database()
+try:
+    init_database()
+except Exception as e:
+    st.error(f"❌ เกิดข้อผิดพลาดในการเริ่มต้นฐานข้อมูล: {str(e)}")
 
 # หัวข้อหลัก
 st.title("🏥 ระบบเบิกเครื่องมือแพทย์")
@@ -1015,38 +1063,39 @@ elif menu == "⚙️ จัดการระบบ":
         st.subheader("📊 ข้อมูลฐานข้อมูล")
         
         # แสดงข้อมูลฐานข้อมูล
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
         
-        # ขนาดไฟล์ฐานข้อมูล
-        if os.path.exists(DB_PATH):
-            db_size = os.path.getsize(DB_PATH) / 1024  # KB
-            st.metric("ขนาดฐานข้อมูล", f"{db_size:.2f} KB")
-        else:
-            st.metric("ขนาดฐานข้อมูล", "ไม่พบไฟล์")
-        
-        # จำนวนตาราง
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = cursor.fetchall()
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**ตารางในฐานข้อมูล:**")
-            for table in tables:
-                cursor.execute(f"SELECT COUNT(*) FROM {table[0]}")
-                count = cursor.fetchone()[0]
-                st.write(f"- {table[0]}: {count} รายการ")
-        
-        with col2:
-            # แสดงโครงสร้างตาราง
-            st.write("**โครงสร้างตาราง transactions:**")
-            cursor.execute("PRAGMA table_info(transactions)")
-            trans_info = cursor.fetchall()
-            for info in trans_info:
-                st.write(f"- {info[1]} ({info[2]})")
-        
-        conn.close()
+        try:
+            # ขนาดไฟล์ฐานข้อมูล
+            if os.path.exists(DB_PATH):
+                db_size = os.path.getsize(DB_PATH) / 1024  # KB
+                st.metric("ขนาดฐานข้อมูล", f"{db_size:.2f} KB")
+            else:
+                st.metric("ขนาดฐานข้อมูล", "ไม่พบไฟล์")
+            
+            # จำนวนตาราง
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tables = cursor.fetchall()
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**ตารางในฐานข้อมูล:**")
+                for table in tables:
+                    cursor.execute(f"SELECT COUNT(*) FROM {table[0]}")
+                    count = cursor.fetchone()[0]
+                    st.write(f"- {table[0]}: {count} รายการ")
+            
+            with col2:
+                # แสดงโครงสร้างตาราง
+                st.write("**โครงสร้างตาราง transactions:**")
+                cursor.execute("PRAGMA table_info(transactions)")
+                trans_info = cursor.fetchall()
+                for info in trans_info:
+                    st.write(f"- {info[1]} ({info[2]})")
+        finally:
+            conn.close()
         
         # ปุ่มสำรองข้อมูล
         st.markdown("---")
@@ -1104,8 +1153,8 @@ st.markdown("🗄️ **ฐานข้อมูล:** SQLite")
 
 # แสดงสถานะการเชื่อมต่อฐานข้อมูล
 try:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.close()
     st.sidebar.success("🟢 เชื่อมต่อฐานข้อมูลสำเร็จ")
-except:
-    st.sidebar.error("🔴 ไม่สามารถเชื่อมต่อฐานข้อมูลได้")
+except Exception as e:
+    st.sidebar.error(f"🔴 ไม่สามารถเชื่อมต่อฐานข้อมูลได้: {str(e)}")
